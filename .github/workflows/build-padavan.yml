@@ -1,0 +1,84 @@
+# ============================================================
+# 红米 AC2100 (RM2100) Padavan 4.4 内核固件 云编译配置
+# 功能：科学上网(SS/SSR/V2Ray/Xray[vless]/Trojan) + CPU超频1100MHz
+# 触发方式：fork 后点右上角 Star 即可开始编译
+# ============================================================
+name: Build Padavan RM2100
+
+on:
+  workflow_dispatch:
+  watch:
+    types: [started]
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    # 只有仓库主人自己点 Star 才触发，防止别人 fork 后点你的 Star 触发编译
+    if: github.event.repository.owner.id == github.event.sender.id
+
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v3
+
+    - name: 安装编译依赖
+      env:
+        DEBIAN_FRONTEND: noninteractive
+      run: |
+        sudo apt-get update
+        sudo apt-get -y install unzip libtool-bin curl cmake gperf gawk flex bison nano xxd fakeroot \
+          cpio git python3-docutils gettext automake autopoint texinfo build-essential help2man \
+          pkg-config zlib1g-dev libgmp3-dev libmpc-dev libmpfr-dev libncurses5-dev libltdl-dev wget libc-dev-bin
+
+    - name: 克隆 4.4 内核源码并准备工具链
+      run: |
+        git clone --depth=1 https://github.com/MeIsReallyBa/padavan-4.4.git /opt/rt-n56u
+        cd /opt/rt-n56u/toolchain-mipsel
+        sh dl_toolchain.sh
+        mkdir -p /opt/images
+
+    - name: 定制配置并编译
+      run: |
+        cd /opt/rt-n56u/trunk
+        cp -f configs/templates/RM2100.config .config
+
+        # ===== 关闭 IPv6 =====
+        sed -i 's/CONFIG_FIRMWARE_ENABLE_IPV6=y/CONFIG_FIRMWARE_ENABLE_IPV6=n/g' .config
+
+        # ===== 科学上网插件（先删除旧项，再写入，避免重复）=====
+        sed -i '/CONFIG_FIRMWARE_INCLUDE_SHADOWSOCKS/d' .config
+        sed -i '/CONFIG_FIRMWARE_INCLUDE_SSSERVER/d' .config
+        sed -i '/CONFIG_FIRMWARE_INCLUDE_XRAY/d' .config
+        sed -i '/CONFIG_FIRMWARE_INCLUDE_V2RAY/d' .config
+        sed -i '/CONFIG_FIRMWARE_INCLUDE_TROJAN/d' .config
+        sed -i '/CONFIG_FIRMWARE_INCLUDE_SSOBFS/d' .config
+        echo "CONFIG_FIRMWARE_INCLUDE_SHADOWSOCKS=y" >> .config   # 科学上网主插件（界面+调度）
+        echo "CONFIG_FIRMWARE_INCLUDE_SSSERVER=n" >> .config      # SS server（不需要）
+        echo "CONFIG_FIRMWARE_INCLUDE_XRAY=y" >> .config          # Xray 内核（支持 vless/vmess/trojan）
+        echo "CONFIG_FIRMWARE_INCLUDE_V2RAY=n" >> .config         # V2Ray 内核（xray 已覆盖，不重复集成）
+        echo "CONFIG_FIRMWARE_INCLUDE_TROJAN=n" >> .config        # Trojan 内核（xray 已覆盖）
+        echo "CONFIG_FIRMWARE_INCLUDE_SSOBFS=n" >> .config        # obfs 混淆（不需要）
+
+        # ===== CPU 超频 1100MHz =====
+        # 频率值：1000Mhz=0x312  1100Mhz=0x362  1120Mhz=0x372  1200Mhz=0x3B2
+        sed -i '/CONFIG_FIRMWARE_INCLUDE_OC/d' .config
+        sed -i '/CONFIG_FIRMWARE_MT7621_OC/d' .config
+        echo "CONFIG_FIRMWARE_INCLUDE_OC=y" >> .config
+        echo 'CONFIG_FIRMWARE_MT7621_OC="0x362"' >> .config
+
+        # ===== 预置 WiFi 名字和密码 =====
+        sed -i 's|#define DEF_WLAN_2G_SSID.*|#define DEF_WLAN_2G_SSID "401"|' user/shared/defaults.h
+        sed -i 's|#define DEF_WLAN_5G_SSID.*|#define DEF_WLAN_5G_SSID "401-5G"|' user/shared/defaults.h
+        sed -i 's|#define DEF_WLAN_2G_PSK.*|#define DEF_WLAN_2G_PSK "470862330a"|' user/shared/defaults.h
+        sed -i 's|#define DEF_WLAN_5G_PSK.*|#define DEF_WLAN_5G_PSK "470862330a"|' user/shared/defaults.h
+
+        # ===== 编译 =====
+        sudo ./clear_tree
+        sudo ./build_firmware_modify RM2100 0
+        sudo mv -f images/*.trx /opt/images/
+
+    - name: 上传固件
+      uses: actions/upload-artifact@v3
+      if: always()
+      with:
+        name: Padavan-RM2100
+        path: /opt/images
